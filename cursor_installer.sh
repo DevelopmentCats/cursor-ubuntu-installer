@@ -266,11 +266,36 @@ cleanup_existing() {
     print_success "Existing installation cleaned up"
 }
 
+# Function to check if a package is installed
+is_package_installed() {
+    local package_name="$1"
+    dpkg-query -W -f='${Status}' "$package_name" 2>/dev/null | grep -q "install ok installed"
+}
+
 # Function to try installing FUSE libraries
 try_install_fuse() {
-    print_status "Attempting to install FUSE libraries..."
+    print_status "Checking for FUSE libraries..."
     
-    # Try libfuse3 first (newer version)
+    # First, check if any FUSE library is already installed
+    if is_package_installed "libfuse3"; then
+        FUSE_INSTALLED="libfuse3"
+        print_success "libfuse3 is already installed"
+        return 0
+    elif is_package_installed "libfuse2t64"; then
+        FUSE_INSTALLED="libfuse2t64"
+        print_success "libfuse2t64 is already installed"
+        return 0
+    elif is_package_installed "libfuse2"; then
+        FUSE_INSTALLED="libfuse2"
+        print_success "libfuse2 is already installed"
+        return 0
+    fi
+    
+    # No FUSE library found, attempt installation in order of preference
+    print_status "No FUSE library found, attempting installation..."
+    
+    # Try libfuse3 first (newer version, preferred)
+    print_status "Trying to install libfuse3..."
     if apt-get install -y libfuse3 2>/dev/null; then
         FUSE_INSTALLED="libfuse3"
         print_success "Successfully installed libfuse3"
@@ -278,13 +303,15 @@ try_install_fuse() {
     fi
     
     # Try libfuse2t64 (Ubuntu 24.04+)
+    print_status "Trying to install libfuse2t64..."
     if apt-get install -y libfuse2t64 2>/dev/null; then
         FUSE_INSTALLED="libfuse2t64"
         print_success "Successfully installed libfuse2t64"
         return 0
     fi
     
-    # Try libfuse2 (older versions)
+    # Try libfuse2 (older versions, fallback)
+    print_status "Trying to install libfuse2..."
     if apt-get install -y libfuse2 2>/dev/null; then
         FUSE_INSTALLED="libfuse2"
         print_success "Successfully installed libfuse2"
@@ -297,24 +324,40 @@ try_install_fuse() {
 
 # Function to install dependencies
 install_dependencies() {
-    print_status "Installing dependencies..."
+    print_status "Checking and installing dependencies..."
     
     # Update package list
+    print_status "Updating package list..."
     apt-get update -qq
     
-    # Install curl if not present
+    # Check and install curl if not present
     if ! command -v curl >/dev/null 2>&1; then
-        print_status "Installing curl..."
-        apt-get install -y curl
+        if is_package_installed "curl"; then
+            print_success "curl is already installed"
+        else
+            print_status "Installing curl..."
+            if apt-get install -y curl; then
+                print_success "Successfully installed curl"
+            else
+                print_error "Failed to install curl"
+                exit 1
+            fi
+        fi
+    else
+        print_success "curl is already available"
     fi
     
-    # Install jq for better JSON parsing (optional)
+    # Check and install jq for better JSON parsing (optional)
     if ! command -v jq >/dev/null 2>&1; then
-        if apt-get install -y jq 2>/dev/null; then
-            print_status "Installed jq for better JSON parsing"
+        if is_package_installed "jq"; then
+            print_success "jq is already installed"
+        elif apt-get install -y jq 2>/dev/null; then
+            print_success "Successfully installed jq for better JSON parsing"
         else
-            print_status "jq not available, using fallback JSON parsing"
+            print_status "jq not available in repositories, using fallback JSON parsing"
         fi
+    else
+        print_success "jq is already available"
     fi
     
     # Try to install FUSE libraries
