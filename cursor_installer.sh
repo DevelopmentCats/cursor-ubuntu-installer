@@ -130,8 +130,10 @@ version_compare() {
 check_existing_installation() {
     local has_appimage=false
     local has_extracted=false
+    local has_legacy=false
     local needs_update=false
     
+    # Check for new installation paths
     if [[ -f "$APPIMAGE_PATH" ]]; then
         has_appimage=true
     fi
@@ -140,7 +142,19 @@ check_existing_installation() {
         has_extracted=true
     fi
     
-    if [[ "$has_appimage" == true ]] || [[ "$has_extracted" == true ]]; then
+    # Check for legacy installation from old script (lowercase paths)
+    if [[ -f "/opt/cursor.appimage" ]]; then
+        has_legacy=true
+        print_status "Found legacy Cursor installation at /opt/cursor.appimage"
+    fi
+    
+    # Check for other potential legacy installations
+    if [[ -f "/opt/Cursor.appimage" ]] || [[ -f "/opt/CURSOR.appimage" ]]; then
+        has_legacy=true
+        print_status "Found legacy Cursor installation with different casing"
+    fi
+    
+    if [[ "$has_appimage" == true ]] || [[ "$has_extracted" == true ]] || [[ "$has_legacy" == true ]]; then
         print_status "Found existing Cursor installation"
         get_installed_version
         
@@ -215,13 +229,37 @@ check_existing_installation() {
 
 # Function to cleanup existing installation
 cleanup_existing() {
+    print_status "Cleaning up existing installation..."
+    
+    # Clean up new installation paths (current script structure)
     [[ -d "$INSTALL_DIR" ]] && rm -rf "$INSTALL_DIR"
     [[ -f "$DESKTOP_ENTRY_PATH" ]] && rm -f "$DESKTOP_ENTRY_PATH"
     
-    # Remove alias from common shell rc files
+    # Clean up legacy installation files (original script format - lowercase)
+    [[ -f "/opt/cursor.appimage" ]] && rm -f "/opt/cursor.appimage"
+    [[ -f "/opt/cursor.png" ]] && rm -f "/opt/cursor.png"
+    
+    # Clean up any mixed case variations that might exist
+    [[ -f "/opt/Cursor.appimage" ]] && rm -f "/opt/Cursor.appimage"
+    [[ -f "/opt/Cursor.png" ]] && rm -f "/opt/Cursor.png"
+    [[ -f "/opt/CURSOR.appimage" ]] && rm -f "/opt/CURSOR.appimage"
+    [[ -f "/opt/CURSOR.png" ]] && rm -f "/opt/CURSOR.png"
+    
+    # Clean up any old desktop entries that might exist
+    [[ -f "/usr/share/applications/Cursor.desktop" ]] && rm -f "/usr/share/applications/Cursor.desktop"
+    [[ -f "/usr/share/applications/cursor-ai.desktop" ]] && rm -f "/usr/share/applications/cursor-ai.desktop"
+    
+    # Remove alias from common shell rc files (both old and new format)
     for rc_file in /home/*/.bashrc /home/*/.zshrc /root/.bashrc /root/.zshrc; do
         if [[ -f "$rc_file" ]]; then
+            # Remove new format aliases (with version comment)
             sed -i '/# Cursor alias/,/^$/d' "$rc_file" 2>/dev/null || true
+            # Remove old format aliases (simple function without version comment)
+            sed -i '/^function cursor()/,/^}$/d' "$rc_file" 2>/dev/null || true
+            # Remove any standalone cursor alias lines
+            sed -i '/alias cursor=/d' "$rc_file" 2>/dev/null || true
+            # Remove legacy cursor aliases that might use /opt/cursor.appimage directly
+            sed -i '/\/opt\/cursor\.appimage/d' "$rc_file" 2>/dev/null || true
         fi
     done
     
@@ -322,12 +360,18 @@ download_icon() {
 test_appimage_execution() {
     print_status "Testing AppImage execution..."
     
-    # Try to run the AppImage with --help to see if it works
-    if timeout 10s "$APPIMAGE_PATH" --help >/dev/null 2>&1; then
+    # Make sure the AppImage has correct permissions
+    chmod +x "$APPIMAGE_PATH"
+    
+    # Try to run the AppImage with --no-sandbox --version to see if it works
+    # Using --version instead of --help as it's more reliable for testing
+    print_status "Running test: $APPIMAGE_PATH --no-sandbox --version"
+    if timeout 15s "$APPIMAGE_PATH" --no-sandbox --version >/dev/null 2>&1; then
         print_success "AppImage execution test successful"
         return 0
     else
         print_warning "AppImage execution test failed, falling back to extraction method"
+        print_status "This is normal on newer Ubuntu versions and doesn't indicate an error"
         return 1
     fi
 }
@@ -373,20 +417,41 @@ create_desktop_entry() {
         ICON_ENTRY="$ICON_PATH"
     fi
     
+    # Verify executable and icon exist before creating desktop entry
+    if [[ ! -f "$EXEC_PATH" ]]; then
+        print_error "Executable not found at $EXEC_PATH"
+        return 1
+    fi
+    
+    # Ensure the applications directory exists
+    mkdir -p "/usr/share/applications"
+    
     cat > "$DESKTOP_ENTRY_PATH" <<EOL
 [Desktop Entry]
+Version=1.0
+Type=Application
 Name=Cursor AI IDE
 Comment=AI-powered code editor (v$CURSOR_VERSION)
-Exec=$EXEC_PATH --no-sandbox
+Terminal=false
+Exec=$EXEC_PATH --no-sandbox %F
 Icon=$ICON_ENTRY
-Type=Application
-Categories=Development;IDE;
+Categories=Development;IDE;TextEditor;
 StartupWMClass=Cursor
-MimeType=text/plain;text/x-chdr;text/x-csrc;text/x-c++hdr;text/x-c++src;text/x-java;text/x-dsrc;text/x-pascal;text/x-perl;text/x-python;application/x-php;application/x-httpd-php3;application/x-httpd-php4;application/x-httpd-php5;application/x-ruby;text/x-tcl;text/x-tex;application/x-sh;text/x-chdr;text/x-csrc;text/x-dtd;text/x-javascript;application/json;text/x-markdown;text/xml;text/css;text/html;text/x-sql;application/x-yaml;
+StartupNotify=true
+MimeType=text/plain;text/x-chdr;text/x-csrc;text/x-c++hdr;text/x-c++src;text/x-java;text/x-dsrc;text/x-pascal;text/x-perl;text/x-python;application/x-php;application/x-httpd-php3;application/x-httpd-php4;application/x-httpd-php5;application/x-ruby;text/x-tcl;text/x-tex;application/x-sh;text/x-dtd;text/x-javascript;application/json;text/x-markdown;text/xml;text/css;text/html;text/x-sql;application/x-yaml;
 EOL
     
     chmod 644 "$DESKTOP_ENTRY_PATH"
-    print_success "Desktop entry created"
+    
+    # Verify the desktop entry was created successfully
+    if [[ -f "$DESKTOP_ENTRY_PATH" ]]; then
+        print_success "Desktop entry created at $DESKTOP_ENTRY_PATH"
+        print_status "Desktop entry executable: $EXEC_PATH"
+        print_status "Desktop entry icon: $ICON_ENTRY"
+    else
+        print_error "Failed to create desktop entry"
+        return 1
+    fi
 }
 
 # Function to create shell alias
@@ -434,15 +499,39 @@ function cursor() {
 
 # Function to update desktop database
 update_desktop_database() {
-    print_status "Updating desktop database..."
+    print_status "Updating desktop database and application menu..."
+    
+    # Update desktop database
     if command -v update-desktop-database >/dev/null 2>&1; then
-        update-desktop-database /usr/share/applications/ 2>/dev/null || true
+        if update-desktop-database /usr/share/applications/ 2>/dev/null; then
+            print_status "Desktop database updated successfully"
+        else
+            print_warning "Failed to update desktop database, but continuing"
+        fi
+    else
+        print_warning "update-desktop-database not found, application may not appear immediately"
     fi
     
     # Update icon cache if available
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-        gtk-update-icon-cache -f /usr/share/icons/hicolor/ 2>/dev/null || true
+        if gtk-update-icon-cache -f /usr/share/icons/hicolor/ 2>/dev/null; then
+            print_status "Icon cache updated"
+        fi
     fi
+    
+    # Force refresh GNOME shell cache if running GNOME
+    if command -v gnome-shell >/dev/null 2>&1 && pgrep -f gnome-shell >/dev/null; then
+        print_status "Refreshing GNOME application cache..."
+        # Signal GNOME to refresh applications
+        killall -SIGUSR1 gnome-shell 2>/dev/null || true
+    fi
+    
+    # Update MIME database if available
+    if command -v update-mime-database >/dev/null 2>&1; then
+        update-mime-database /usr/share/mime/ 2>/dev/null || true
+    fi
+    
+    print_success "Application menu refresh completed"
 }
 
 # Function to display installation summary
@@ -467,12 +556,18 @@ display_summary() {
     echo
     echo "How to launch:"
     echo "  • From applications menu: Search for 'Cursor AI IDE'"
+    echo "    (If not visible immediately, try logging out/in or restarting)"
     echo "  • From terminal: Run 'cursor' command (after restarting terminal)"
     if [[ "$INSTALLATION_METHOD" == "extract" ]]; then
         echo "  • Direct execution: $EXTRACTED_PATH/AppRun --no-sandbox"
     else
         echo "  • Direct execution: $APPIMAGE_PATH --no-sandbox"
     fi
+    echo
+    echo "Troubleshooting:"
+    echo "  • If app doesn't appear in menu, try: sudo update-desktop-database"
+    echo "  • For GNOME: Press Alt+F2, type 'r', and press Enter to restart shell"
+    echo "  • Check desktop entry exists: ls -la $DESKTOP_ENTRY_PATH"
     echo
     echo "To update in the future, simply run this script again!"
     echo
